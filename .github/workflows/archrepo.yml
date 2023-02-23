@@ -1,0 +1,87 @@
+name: build AUR repository
+
+on:
+  schedule:
+    - cron: 1 0 */2 * *
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  checkPackageParam:
+    runs-on: ubuntu-latest
+    env:
+      PKG_PARAM:  ${{ secrets.PKGPARAM }}
+    steps:
+      - id: build-packages
+        name: Get packages parameters
+        run: |
+          if [ -z ${PKG_PARAM} ]; then
+            PKG_PARAM="albert,fcitx-sogoupinyin,microsoft-edge-stable-bin,vala-panel-appmenu-xfce,wps-office-cn"
+          fi
+
+          PKG_PARAM=$(echo ${PKG_PARAM} | sed 's/,/ /g' | sed 's/ /\n/g' | sort | uniq | xargs)
+          PKG_PARAM=$(echo ${PKG_PARAM} | jq -Rcr 'split(" ")')
+          PKG_PARAM="{\"name\":${PKG_PARAM}}"
+          echo "all=${PKG_PARAM}"
+          echo "all=${PKG_PARAM}" >> ${GITHUB_OUTPUT}
+    outputs:
+      all: ${{ steps.build-packages.outputs.all }}
+  cleanRelease:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete release with assets
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const release_tag = 'githubaur'
+
+            const releases = await github.paginate("GET /repos/{owner}/{repo}/releases", {
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+            })
+            const release = releases.find(r => r.tag_name === release_tag)
+            if (typeof release != 'undefined') {
+              github.rest.repos.deleteRelease({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                release_id: release.id,
+              })
+            }
+  build:
+    name: Build packages
+    needs: CheckPackageParam
+    strategy:
+      matrix: ${{ fromJson(needs.CheckPackageParam.outputs.all) }}
+      fail-fast: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: wangkexiong002/action4aur@master
+        with:
+          package: ${{ matrix.name }}
+      - uses: ncipollo/release-action@v1.12.0
+        with:
+          allowUpdates: true
+          tag: githubaur
+          artifacts: "release/*.zst"
+          token: ${{ github.token }}
+  post_build:
+    if: ${{ always() }}
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: robinraju/release-downloader@v1.7
+        with:
+          tag: githubaur
+          fileName: "*.zst"
+      - run: |
+          docker run -t -v $PWD:/working archlinux bash -c "cd /working; repo-add githubaur.db.tar.gz *.zst"
+          ls -al
+      - uses: ncipollo/release-action@v1.12.0
+        with:
+          allowUpdates: true
+          tag: githubaur
+          artifacts: "githubaur.*"
+          token: ${{ github.token }}
+
